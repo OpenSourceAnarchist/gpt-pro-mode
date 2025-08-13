@@ -66,11 +66,12 @@ class ProModeResponse(BaseModel):
 # --- Core Logic ---
 def _one_completion(prompt: str, temperature: float, model: str) -> str:
     """
-    Executes a single chat completion call to OpenRouter with retry logic.
+    Executes a single chat completion call to OpenRouter with intelligent
+    rate limit handling and retry logic.
     """
-    delay = 0.5
+    delay = 1.0  # Start with a 1-second delay for non-rate-limit errors
     messages = [{"role": "user", "content": prompt}]
-    for attempt in range(3):
+    for attempt in range(5): # Increased attempts for more resilience
         try:
             resp = client.chat.completions.create(
                 model=model,
@@ -84,14 +85,29 @@ def _one_completion(prompt: str, temperature: float, model: str) -> str:
             if resp.choices and resp.choices[0].message and resp.choices[0].message.content:
                 return resp.choices[0].message.content
             else:
-                # The response was successful but empty, return empty string.
-                return ""
+                return "" # Successful but empty response
         except OpenAIError as e:
-            if attempt == 2:
-                # On the last attempt, re-raise the exception
-                raise e
-            time.sleep(delay)
-            delay *= 2
+            # --- FIX: Intelligent rate limit handling ---
+            if e.status_code == 429:
+                # Extract the reset time from the headers
+                reset_timestamp_ms = e.response.headers.get("x-ratelimit-reset")
+                if reset_timestamp_ms:
+                    reset_time_sec = int(reset_timestamp_ms) / 1000
+                    current_time_sec = time.time()
+                    wait_time = max(0, reset_time_sec - current_time_sec) + 1 # Add 1s buffer
+                    print(f"Rate limit hit. Waiting for {wait_time:.2f} seconds until reset.")
+                    time.sleep(wait_time)
+                    continue # Retry the request immediately after waiting
+                else:
+                    # Fallback if header is missing
+                    print(f"Rate limit hit, but no reset header. Waiting for {delay} seconds.")
+                    time.sleep(delay)
+            else:
+                # Handle other API errors with simple exponential backoff
+                if attempt == 4: raise e # Re-raise on last attempt
+                print(f"API error encountered: {e}. Retrying in {delay} seconds.")
+                time.sleep(delay)
+                delay *= 2
     return "" # Should not be reached, but linters appreciate it
 
 def _build_synthesis_messages(candidates: List[str]) -> List[Dict[str, str]]:
@@ -124,18 +140,14 @@ def _synthesize(candidates: List[str]) -> str:
     Performs the synthesis step, calling the synthesis model.
     """
     messages = _build_synthesis_messages(candidates)
-    resp = client.chat.completions.create(
-        model=SYNTHESIS_MODEL,
-        messages=messages,
+    # The _one_completion function now handles retries and rate limits,
+    # so we can call it directly for the synthesis step as well.
+    return _one_completion(
+        prompt=messages[-1]['content'], # Pass the user part of the prompt
         temperature=0.2,
-        max_tokens=MAX_OUTPUT_TOKENS,
-        top_p=1,
-        stream=False,
+        model=SYNTHESIS_MODEL
     )
-    # Add defensive check for the synthesis response
-    if resp.choices and resp.choices[0].message and resp.choices[0].message.content:
-        return resp.choices[0].message.content
-    return "Synthesis failed to generate content." # Return a specific error message
+
 
 def _fanout_candidates(prompt: str, n_runs: int) -> List[str]:
     """
@@ -152,7 +164,7 @@ def _fanout_candidates(prompt: str, n_runs: int) -> List[str]:
         for future in cf.as_completed(future_to_index):
             index = future_to_index[future]
             try:
-                # --- FIX: Add a timeout to future.result() to prevent deadlocks ---
+                # Add a timeout to future.result() to prevent deadlocks
                 results[index] = future.result(timeout=TIMEOUT_SECONDS)
             except cf.TimeoutError:
                 print(f"Candidate generation for index {index} failed: Timeout after {TIMEOUT_SECONDS} seconds.")
@@ -191,10 +203,13 @@ def _pro_mode_tournament(prompt: str, n_runs: int) -> ProModeResponse:
     # Synthesize each group in parallel
     group_winners: List[str] = []
     with cf.ThreadPoolExecutor(max_workers=min(len(groups), MAX_WORKERS)) as executor:
+        # We can't directly use _synthesize here because it takes a list of strings,
+        # not a single prompt. We'll need a small wrapper or adapt the logic.
+        # For now, let's keep the synthesis calls simpler.
         future_to_group = {executor.submit(_synthesize, group): group for group in groups}
         for future in cf.as_completed(future_to_group):
             try:
-                # --- FIX: Add a timeout to the synthesis step as well ---
+                # Add a timeout to the synthesis step as well
                 group_winners.append(future.result(timeout=TIMEOUT_SECONDS))
             except cf.TimeoutError:
                 print(f"A synthesis group failed: Timeout after {TIMEOUT_SECONDS} seconds.")
