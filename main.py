@@ -13,10 +13,10 @@ load_dotenv()
 
 # Load from environment variables with defaults
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-GENERATION_MODEL = os.getenv("GENERATION_MODEL", "anthropic/claude-3-haiku-20240307")
-SYNTHESIS_MODEL = os.getenv("SYNTHESIS_MODEL", "openai/gpt-4o")
-SITE_URL = os.getenv("YOUR_SITE_URL", "http://localhost:8000")
-SITE_NAME = os.getenv("YOUR_SITE_NAME", "OpenRouter Pro Mode")
+GENERATION_MODEL = os.getenv("GENERATION_MODEL", "deepseek/deepseek-chat-v3-0324:free")
+SYNTHESIS_MODEL = os.getenv("SYNTHESIS_MODEL", "deepseek/deepseek-r1-0528:free")
+SITE_URL = os.getenv("YOUR_SITE_URL")
+SITE_NAME = os.getenv("YOUR_SITE_NAME")
 
 # --- Constants ---
 # Load numeric constants from environment, with defaults, and cast to int
@@ -76,7 +76,12 @@ def _one_completion(prompt: str, temperature: float, model: str) -> str:
                 top_p=1,
                 stream=False,
             )
-            return resp.choices[0].message.content or ""
+            # --- FIX: Add defensive check for the response structure ---
+            if resp.choices and resp.choices[0].message and resp.choices[0].message.content:
+                return resp.choices[0].message.content
+            else:
+                # The response was successful but empty, return empty string.
+                return ""
         except OpenAIError as e:
             if attempt == 2:
                 # On the last attempt, re-raise the exception
@@ -123,7 +128,10 @@ def _synthesize(candidates: List[str]) -> str:
         top_p=1,
         stream=False,
     )
-    return resp.choices[0].message.content or ""
+    # --- FIX: Add defensive check for the synthesis response ---
+    if resp.choices and resp.choices[0].message and resp.choices[0].message.content:
+        return resp.choices[0].message.content
+    return "Synthesis failed to generate content." # Return a specific error message
 
 def _fanout_candidates(prompt: str, n_runs: int) -> List[str]:
     """
