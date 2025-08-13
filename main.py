@@ -15,8 +15,8 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "deepseek/deepseek-chat-v3-0324:free")
 SYNTHESIS_MODEL = os.getenv("SYNTHESIS_MODEL", "deepseek/deepseek-r1-0528:free")
-SITE_URL = os.getenv("YOUR_SITE_URL")
-SITE_NAME = os.getenv("YOUR_SITE_NAME")
+SITE_URL = os.getenv("YOUR_SITE_URL", "http://localhost:8000")
+SITE_NAME = os.getenv("YOUR_SITE_NAME", "OpenRouter Pro Mode")
 
 # --- Constants ---
 # Load numeric constants from environment, with defaults, and cast to int
