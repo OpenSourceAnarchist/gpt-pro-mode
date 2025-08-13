@@ -15,8 +15,8 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "deepseek/deepseek-chat-v3-0324:free")
 SYNTHESIS_MODEL = os.getenv("SYNTHESIS_MODEL", "deepseek/deepseek-r1-0528:free")
-SITE_URL = os.getenv("YOUR_SITE_URL", "http://localhost:8000")
-SITE_NAME = os.getenv("YOUR_SITE_NAME", "OpenRouter Pro Mode")
+SITE_URL = os.getenv("YOUR_SITE_URL")
+SITE_NAME = os.getenv("YOUR_SITE_NAME")
 
 # --- Constants ---
 # Load numeric constants from environment, with defaults, and cast to int
@@ -27,7 +27,6 @@ GROUP_SIZE = int(os.getenv("GROUP_SIZE", 10))
 # Hardcoded constants
 MAX_WORKERS = 100
 MAX_GENS = 100
-
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
@@ -41,13 +40,18 @@ app = FastAPI(
 if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY environment variable not set.")
 
+# --- FIX: Build headers dictionary defensively ---
+# This prevents errors if SITE_URL or SITE_NAME are None or empty.
+default_headers = {}
+if SITE_URL:
+    default_headers["HTTP-Referer"] = SITE_URL
+if SITE_NAME:
+    default_headers["X-Title"] = SITE_NAME
+
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
-    default_headers={
-        "HTTP-Referer": SITE_URL,
-        "X-Title": SITE_NAME,
-    },
+    default_headers=default_headers,
 )
 
 # --- Pydantic Schemas ---
@@ -76,7 +80,7 @@ def _one_completion(prompt: str, temperature: float, model: str) -> str:
                 top_p=1,
                 stream=False,
             )
-            # --- FIX: Add defensive check for the response structure ---
+            # Add defensive check for the response structure
             if resp.choices and resp.choices[0].message and resp.choices[0].message.content:
                 return resp.choices[0].message.content
             else:
@@ -128,7 +132,7 @@ def _synthesize(candidates: List[str]) -> str:
         top_p=1,
         stream=False,
     )
-    # --- FIX: Add defensive check for the synthesis response ---
+    # Add defensive check for the synthesis response
     if resp.choices and resp.choices[0].message and resp.choices[0].message.content:
         return resp.choices[0].message.content
     return "Synthesis failed to generate content." # Return a specific error message
