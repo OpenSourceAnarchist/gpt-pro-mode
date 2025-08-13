@@ -23,6 +23,7 @@ SITE_NAME = os.getenv("YOUR_SITE_NAME")
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", 8192))
 TOURNAMENT_THRESHOLD = int(os.getenv("TOURNAMENT_THRESHOLD", 20))
 GROUP_SIZE = int(os.getenv("GROUP_SIZE", 10))
+TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", 60))
 
 # Hardcoded constants
 MAX_WORKERS = 100
@@ -40,8 +41,7 @@ app = FastAPI(
 if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY environment variable not set.")
 
-# --- FIX: Build headers dictionary defensively ---
-# This prevents errors if SITE_URL or SITE_NAME are None or empty.
+# Build headers dictionary defensively
 default_headers = {}
 if SITE_URL:
     default_headers["HTTP-Referer"] = SITE_URL
@@ -152,11 +152,15 @@ def _fanout_candidates(prompt: str, n_runs: int) -> List[str]:
         for future in cf.as_completed(future_to_index):
             index = future_to_index[future]
             try:
-                results[index] = future.result()
+                # --- FIX: Add a timeout to future.result() to prevent deadlocks ---
+                results[index] = future.result(timeout=TIMEOUT_SECONDS)
+            except cf.TimeoutError:
+                print(f"Candidate generation for index {index} failed: Timeout after {TIMEOUT_SECONDS} seconds.")
+                results[index] = f"Error: Timeout after {TIMEOUT_SECONDS} seconds."
             except Exception as e:
-                # Log the error but continue, allowing other threads to finish
+                # Log other errors but continue
                 print(f"Candidate generation for index {index} failed: {e}")
-                results[index] = f"Error: {e}" # Mark failure
+                results[index] = f"Error: {e}"
     return results
 
 def _pro_mode_simple(prompt: str, n_runs: int) -> ProModeResponse:
@@ -190,7 +194,10 @@ def _pro_mode_tournament(prompt: str, n_runs: int) -> ProModeResponse:
         future_to_group = {executor.submit(_synthesize, group): group for group in groups}
         for future in cf.as_completed(future_to_group):
             try:
-                group_winners.append(future.result())
+                # --- FIX: Add a timeout to the synthesis step as well ---
+                group_winners.append(future.result(timeout=TIMEOUT_SECONDS))
+            except cf.TimeoutError:
+                print(f"A synthesis group failed: Timeout after {TIMEOUT_SECONDS} seconds.")
             except Exception as e:
                 print(f"A synthesis group failed: {e}")
 
@@ -214,9 +221,11 @@ def pro_mode_endpoint(body: ProModeRequest):
         else:
             return _pro_mode_simple(prompt=body.prompt, n_runs=body.num_gens)
     except OpenAIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=f"An API error occurred: {e.body.get('message', str(e))}")
+        # Gracefully handle API errors from OpenRouter
+        detail_msg = f"An API error occurred: {e.body.get('message', str(e)) if e.body else str(e)}"
+        raise HTTPException(status_code=e.status_code or 502, detail=detail_msg)
     except HTTPException:
-        # Re-raise known HTTP exceptions
+        # Re-raise known HTTP exceptions from our own logic
         raise
     except Exception as e:
         # Catch any other unexpected errors
